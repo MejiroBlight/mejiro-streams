@@ -1,11 +1,8 @@
-use crate::{decoder, AppState};
-use image::{codecs::jpeg::JpegEncoder, ImageEncoder};
+use crate::{decoder, state::AppState};
 use tauri::http::{Request, Response};
 
-/// Handle a request to `video-preview://localhost/frame?t=<ms>`.
-///
-/// Pipeline: seek → FFmpeg decode → wgpu composite → JPEG encode → HTTP response.
-pub fn handle(
+
+pub async fn handle(
     request: &Request<Vec<u8>>,
     state: &tauri::State<'_, AppState>,
 ) -> Response<Vec<u8>> {
@@ -52,39 +49,28 @@ pub fn handle(
 
     // Render via wgpu (composite pass)
     let render_start = Instant::now();
-    let rendered = {
-        let mut guard = state.renderer.lock().unwrap();
-        match guard.as_mut() {
-            Some(r) => match r.render_frame(&frame.rgba_pixels, frame.width, frame.height) {
-                Ok(pixels) => pixels,
-                Err(e) => return error_response(&format!("Render error: {e}")),
-            },
-            None => {
-                // wgpu not available – pass raw pixels directly
-                frame.rgba_pixels.clone()
-            }
+    let binary = match (state.gpu_ctx.lock().unwrap().as_mut(), state.pipelines.lock().unwrap().as_mut()) {
+        (Some(gpu_ctx), Some(pipelines)) => {
+            let mut encoder = gpu_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame Render Encoder"),
+            });
+            let v = pipelines.upload.upload(gpu_ctx, &frame);
+            let rgba_v = pipelines.nv12_to_rgba.execute(gpu_ctx, &mut encoder, v);
+            let flipped_v = pipelines.flip.execute(gpu_ctx, &mut encoder, &rgba_v);
+            let (out_y, out_uv) = pipelines.rgba_to_nv12.execute(gpu_ctx, &mut encoder, &flipped_v);
+            pipelines.read_pixel.enqueue_copy(&mut encoder, &out_y, &out_uv);
+            gpu_ctx.queue.submit(Some(encoder.finish()));
+            pipelines.read_pixel.download_pixels(gpu_ctx).await
+        }
+        _ => {
+            eprintln!("[protocol] GPU unavailable, falling back to CPU path for rendering");
+            frame.nv12_pixels.clone()
         }
     };
     let render_ms = render_start.elapsed().as_millis();
     eprintln!("[protocol] Render took {}ms", render_ms);
-
-    // Encode to JPEG
-    let encode_start = Instant::now();
-    let result = match encode_jpeg(&rendered, frame.width, frame.height) {
-        Ok(jpeg) => {
-            let encode_ms = encode_start.elapsed().as_millis();
-            let total_ms = start.elapsed().as_millis();
-            eprintln!("[protocol] JPEG encode took {}ms | Total: {}ms (decode={}ms, render={}ms)", 
-                encode_ms, total_ms, decode_ms, render_ms);
-            Response::builder()
-                .header("Content-Type", "image/jpeg")
-                .header("Cache-Control", "no-store")
-                .body(jpeg)
-                .unwrap()
-        },
-        Err(e) => error_response(&format!("JPEG encode error: {e}")),
-    };
-    result
+    eprintln!("[protocol] Total processing time: {}ms", start.elapsed().as_millis());
+    success_response(binary)
 }
 
 // ---------------------------------------------------------------------------
@@ -112,21 +98,10 @@ fn error_response(msg: &str) -> Response<Vec<u8>> {
         .unwrap()
 }
 
-fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    // Convert RGBA → RGB (JPEG does not support alpha)
-    let img = image::RgbaImage::from_raw(width, height, rgba.to_vec())
-        .ok_or("Failed to build RgbaImage")?;
-    let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
-
-    let mut out = Vec::new();
-    JpegEncoder::new_with_quality(&mut out, 70)
-        .write_image(
-            rgb_img.as_raw(),
-            width,
-            height,
-            image::ExtendedColorType::Rgb8,
-        )
-        .map_err(|e| e.to_string())?;
-
-    Ok(out)
+fn success_response(data: Vec<u8>) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(200)
+        .header("Content-Type", "application/octet-stream")
+        .body(data)
+        .unwrap()
 }

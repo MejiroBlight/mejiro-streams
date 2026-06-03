@@ -1,5 +1,7 @@
-use crate::{decoder, AppState, PersistentDecoder};
+use crate::{decoder, gpu::{self, uploader::InputFormat}, state::{AppState, PersistentDecoder, Pipelines}};
+use ffmpeg_next::format::context::destructor::Mode::Input;
 use serde::Serialize;
+use wgpu::core::binding_model::BindingZone::Pipeline;
 use std::path::PathBuf;
 use tauri::AppHandle;
 
@@ -106,6 +108,16 @@ pub fn load_video_path(
         stream_index,
         decoder,
     });
+
+    if let Some(gpu_ctx) = state.gpu_ctx.lock().unwrap().as_mut() {
+        state.pipelines.lock().unwrap().replace(Pipelines {
+            upload: gpu::uploader::Uploader::new(gpu_ctx, info.width, info.height, InputFormat::Nv12),
+            flip: gpu::flip_filter::FlipFilter::new(gpu_ctx, info.width, info.height),
+            rgba_to_nv12: gpu::rgba_to_nv12::RgbaToNv12Converter::new(gpu_ctx, info.width, info.height),
+            nv12_to_rgba: gpu::nv12_to_rgba::Nv12RgbaConverter::new(gpu_ctx, info.width, info.height),
+            read_pixel: gpu::read_pixel::ReadPixel::new(gpu_ctx, info.width, info.height),
+        });
+    }
 
     Ok(VideoInfo {
         duration_ms: info.duration_ms,

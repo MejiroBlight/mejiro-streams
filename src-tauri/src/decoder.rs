@@ -6,7 +6,7 @@ use ffmpeg_next::{ threading::Config};
 pub struct FrameData {
     pub width: u32,
     pub height: u32,
-    pub rgba_pixels: Vec<u8>,
+    pub nv12_pixels: Vec<u8>,
 }
 
 /// Video metadata.
@@ -102,7 +102,7 @@ pub fn decode_frame_persistent(
         decoder.format(),
         width,
         height,
-        ffmpeg_next::format::Pixel::RGBA,
+        ffmpeg_next::format::Pixel::NV12,
         width,
         height,
         ffmpeg_next::software::scaling::Flags::BILINEAR,
@@ -118,7 +118,7 @@ pub fn decode_frame_persistent(
     }
     decoder.flush();
     let mut raw_frame = ffmpeg_next::frame::Video::empty();
-    let mut rgba_frame = ffmpeg_next::frame::Video::empty();
+    let mut nv12_frame = ffmpeg_next::frame::Video::empty();
 
     for (stream, packet) in ictx.packets(){
 
@@ -135,8 +135,8 @@ pub fn decode_frame_persistent(
                         let frame_ms = (raw_frame.pts().unwrap_or(0) as f64 * time_base_f64 * 1000.0) as u64;
 
                         if frame_ms >= time_ms {
-                            scaler.run(&raw_frame, &mut rgba_frame).map_err(|e| e.to_string())?;
-                            let result = extract_pixels(&rgba_frame, width, height);
+                            scaler.run(&raw_frame, &mut nv12_frame).map_err(|e| e.to_string())?;
+                            let result = extract_pixels(&nv12_frame, width, height);
                             let total_ms = start.elapsed().as_millis();
                             eprintln!("[decoder] Persistent decode took {}ms", total_ms);
                             return Ok(result);
@@ -154,9 +154,9 @@ pub fn decode_frame_persistent(
     let _ = decoder.send_eof();
     while decoder.receive_frame(&mut raw_frame).is_ok() {
         scaler
-            .run(&raw_frame, &mut rgba_frame)
+            .run(&raw_frame, &mut nv12_frame)
             .map_err(|e| e.to_string())?;
-        let result = extract_pixels(&rgba_frame, width, height);
+        let result = extract_pixels(&nv12_frame, width, height);
         let total_ms = start.elapsed().as_millis();
         eprintln!("[decoder] Persistent decode (flush) took {}ms", total_ms);
         return Ok(result);
@@ -194,6 +194,6 @@ fn extract_pixels(frame: &ffmpeg_next::frame::Video, width: u32, height: u32) ->
     FrameData {
         width,
         height,
-        rgba_pixels: pixels,
+        nv12_pixels: pixels,
     }
 }

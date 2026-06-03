@@ -34,6 +34,8 @@ pollster = "0.3"
 # Image encoding
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
+tokio = "1.52.3"
+
 # Utilities
 url = "2"
 
