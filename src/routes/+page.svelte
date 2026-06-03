@@ -1,0 +1,348 @@
+<script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { onDestroy, onMount } from "svelte";
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+  interface VideoInfo {
+    duration_ms: number;
+    width: number;
+    height: number;
+    path: string;
+  }
+
+  let videoInfo = $state<VideoInfo | null>(null);
+  let currentMs = $state(0);
+  let previewSrc = $state("");
+  let isLoading = $state(false);
+  let errorMsg = $state("");
+  let filename = $state("");
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  function msToTimecode(ms: number): string {
+    const h = Math.floor(ms / 3_600_000);
+    const m = Math.floor((ms % 3_600_000) / 60_000);
+    const s = Math.floor((ms % 60_000) / 1_000);
+    const f = Math.floor((ms % 1_000) / (1000 / 30)); // approx 30fps frame number
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(f).padStart(2, "0")}`;
+  }
+
+  async function loadVideo(path: string) {
+    isLoading = true;
+    errorMsg = "";
+    try {
+      const info: VideoInfo = await invoke("load_video_path", { path });
+      videoInfo = info;
+      currentMs = 0;
+      filename = path.split(/[\\/]/).pop() ?? path;
+      await fetchFrame(0);
+    } catch (e) {
+      errorMsg = String(e);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  async function fetchFrame(ms: number) {
+    try {
+      const url: string = await invoke("seek_frame", { timeMs: ms });
+      // Append a random cache-bust query param in case the browser caches identical URLs
+      previewSrc = url + "&_cb=" + Date.now();
+    } catch (e) {
+      errorMsg = String(e);
+    }
+  }
+
+  // Debounced seek – avoids flooding the Rust side while dragging
+  let seekTimer: ReturnType<typeof setTimeout> | null = null;
+  function onSeek(e: Event) {
+    const ms = Number((e.target as HTMLInputElement).value);
+    currentMs = ms;
+    if (seekTimer) clearTimeout(seekTimer);
+    seekTimer = setTimeout(() => fetchFrame(ms), 80);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drag-and-drop (Tauri window-level)
+  // ---------------------------------------------------------------------------
+  onMount(() => {
+    const appWindow = getCurrentWindow();
+    appWindow.onDragDropEvent(async (event) => {
+      if (event.payload.type === "drop") {
+        const paths: string[] = event.payload.paths;
+        if (paths.length > 0) {
+          await loadVideo(paths[0]);
+        }
+      }
+    }).then(unlisten => {
+      onDestroy(() => {
+        unlisten();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Open-file button
+  // ---------------------------------------------------------------------------
+  async function openFile() {
+    isLoading = true;
+    errorMsg = "";
+    try {
+      const info: VideoInfo = await invoke("open_video");
+      videoInfo = info;
+      currentMs = 0;
+      filename = info.path.split(/[\\/]/).pop() ?? info.path;
+      await fetchFrame(0);
+    } catch (e) {
+      // "No file selected" is not really an error
+      if (String(e) !== "No file selected") {
+        errorMsg = String(e);
+      }
+    } finally {
+      isLoading = false;
+    }
+  }
+</script>
+
+<!-- ========================================================================
+     Markup
+     ======================================================================== -->
+<div class="app">
+
+  <!-- Toolbar -->
+  <header class="toolbar">
+    <span class="app-title">mejiro streams</span>
+    <button class="btn-open" onclick={openFile} disabled={isLoading}>
+      {isLoading ? "Loading…" : "Open Video"}
+    </button>
+    {#if filename}
+      <span class="filename">{filename}</span>
+    {/if}
+    {#if videoInfo}
+      <span class="meta">{videoInfo.width}×{videoInfo.height}</span>
+    {/if}
+  </header>
+
+  <!-- Preview area -->
+  <main
+    class="preview-area"
+    class:drop-zone={!videoInfo}
+    ondragover={(e) => e.preventDefault()}
+  >
+    {#if previewSrc}
+      <img
+        id="preview-canvas"
+        src={previewSrc}
+        alt="Video frame preview"
+        class="preview-img"
+      />
+    {:else}
+      <div class="drop-hint">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <polygon points="23 7 16 12 23 17 23 7"/>
+          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+        </svg>
+        <p>動画ファイルをドロップ<br/>または「Open Video」ボタン</p>
+      </div>
+    {/if}
+    {#if errorMsg}
+      <div class="error-banner">{errorMsg}</div>
+    {/if}
+  </main>
+
+  <!-- Timeline / seekbar -->
+  <footer class="timeline">
+    {#if videoInfo}
+      <span class="timecode">{msToTimecode(currentMs)}</span>
+      <input
+        class="seekbar"
+        type="range"
+        min="0"
+        max={videoInfo.duration_ms}
+        value={currentMs}
+        oninput={onSeek}
+      />
+      <span class="timecode">{msToTimecode(videoInfo.duration_ms)}</span>
+    {:else}
+      <span class="timecode-placeholder">--:--:--.--</span>
+      <div class="seekbar seekbar--disabled"></div>
+      <span class="timecode-placeholder">--:--:--.--</span>
+    {/if}
+  </footer>
+
+</div>
+
+<!-- ========================================================================
+     Styles
+     ======================================================================== -->
+<style>
+  :global(*, *::before, *::after) {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  :global(body) {
+    background: #0d0d0d;
+    color: #e0e0e0;
+    font-family: "Inter", "Segoe UI", sans-serif;
+    font-size: 13px;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* --- Toolbar --- */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+
+  .app-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: #a78bfa;
+    margin-right: 4px;
+  }
+
+  .btn-open {
+    padding: 5px 14px;
+    background: #5b21b6;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s;
+  }
+  .btn-open:hover:not(:disabled) { background: #6d28d9; }
+  .btn-open:disabled { opacity: 0.5; cursor: default; }
+
+  .filename {
+    color: #9ca3af;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .meta {
+    color: #6b7280;
+    font-size: 11px;
+  }
+
+  /* --- Preview --- */
+  .preview-area {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: #111;
+    position: relative;
+  }
+
+  .drop-zone {
+    border: 2px dashed #2d2d2d;
+  }
+
+  .preview-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .drop-hint {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    color: #4b5563;
+    text-align: center;
+    line-height: 1.8;
+  }
+
+  .error-banner {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #7f1d1d;
+    color: #fca5a5;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 12px;
+    max-width: 80%;
+    text-align: center;
+  }
+
+  /* --- Timeline --- */
+  .timeline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: #161616;
+    border-top: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+
+  .timecode {
+    font-family: "Courier New", monospace;
+    font-size: 12px;
+    color: #a3a3a3;
+    width: 80px;
+    flex-shrink: 0;
+  }
+
+  .timecode-placeholder {
+    font-family: "Courier New", monospace;
+    font-size: 12px;
+    color: #3a3a3a;
+    width: 80px;
+    flex-shrink: 0;
+  }
+
+  .seekbar {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: #374151;
+    outline: none;
+    cursor: pointer;
+  }
+
+  .seekbar::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #7c3aed;
+    cursor: pointer;
+    border: 2px solid #0d0d0d;
+  }
+
+  .seekbar--disabled {
+    opacity: 0.3;
+    cursor: default;
+    pointer-events: none;
+  }
+</style>
+
