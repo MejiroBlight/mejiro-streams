@@ -1,17 +1,13 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onDestroy, onMount } from "svelte";
+  import type { VideoInfo} from "../lib/bindings";
+  import {commands} from "../lib/bindings";
+  import {open} from "@tauri-apps/plugin-dialog";
 
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
-  interface VideoInfo {
-    duration_ms: number;
-    width: number;
-    height: number;
-    path: string;
-  }
 
   let videoInfo = $state<VideoInfo | null>(null);
   let currentMs = $state(0);
@@ -35,8 +31,11 @@
     isLoading = true;
     errorMsg = "";
     try {
-      const info: VideoInfo = await invoke("load_video_path", { path });
-      videoInfo = info;
+      const info = await commands.loadVideoPath(path);
+      if (info.status !== "ok") {
+        throw new Error(info.error);
+      }
+      videoInfo = info.data;
       currentMs = 0;
       filename = path.split(/[\\/]/).pop() ?? path;
       await fetchFrame(0);
@@ -49,9 +48,12 @@
 
   async function fetchFrame(ms: number) {
     try {
-      const url: string = await invoke("seek_frame", { timeMs: ms });
+      const url = await commands.seekFrame(ms);
+      if (url.status !== "ok") {
+        throw new Error(url.error);
+      }
       // Append a random cache-bust query param in case the browser caches identical URLs
-      previewSrc = url + "&_cb=" + Date.now();
+      previewSrc = url.data + "&_cb=" + Date.now();
     } catch (e) {
       errorMsg = String(e);
     }
@@ -89,21 +91,19 @@
   // Open-file button
   // ---------------------------------------------------------------------------
   async function openFile() {
-    isLoading = true;
-    errorMsg = "";
     try {
-      const info: VideoInfo = await invoke("open_video");
-      videoInfo = info;
-      currentMs = 0;
-      filename = info.path.split(/[\\/]/).pop() ?? info.path;
-      await fetchFrame(0);
-    } catch (e) {
-      // "No file selected" is not really an error
-      if (String(e) !== "No file selected") {
-        errorMsg = String(e);
+      const selected = await open({
+        multiple: false,
+        filters: [
+          { name: "Video Files", extensions: ["mp4", "mkv", "avi", "mov", "webm"] },
+          { name: "All Files", extensions: ["*"] }
+        ]
+      });
+      if (typeof selected === "string") {
+        await loadVideo(selected);
       }
-    } finally {
-      isLoading = false;
+    } catch (e) {
+      // User probably cancelled the dialog, so we can ignore errors
     }
   }
 </script>

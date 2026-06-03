@@ -4,6 +4,7 @@ mod protocol;
 mod state;
 mod gpu;
 mod worker_thread;
+pub mod export;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -45,12 +46,7 @@ pub fn run() {
             Ok(())
         })
         // --- IPC commands -----------------------------------------------------
-        .invoke_handler(tauri::generate_handler![
-            commands::seek_frame,
-            commands::open_video,
-            commands::load_video_path,
-            commands::get_current_time,
-        ])
+        .invoke_handler(commands::commands_builder().invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

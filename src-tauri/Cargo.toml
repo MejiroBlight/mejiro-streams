@@ -39,6 +39,14 @@ tokio = "1.52.3"
 # Utilities
 url = "2"
 
+# AutoTypeGen
+specta = { version = "^2.0.0-rc", features = ["derive"] }
+specta-typescript = "^0.0.7"
+tauri-specta = { version = "^2.0.0-rc", features = ["derive", "typescript"] }
+
+[features]
+export-types = []
+
 [profile.dev]
 opt-level = 1
 

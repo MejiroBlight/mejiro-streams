@@ -1,4 +1,3 @@
-pub mod renderer;
 pub mod context;
 pub mod nv12_to_rgba;
 pub mod uploader;
