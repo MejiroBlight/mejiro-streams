@@ -2344,6 +2344,7 @@ dependencies = [
 name = "mejiro-streams"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "ffmpeg-next",
  "image",
  "pollster",

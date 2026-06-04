@@ -8,8 +8,13 @@ export const commands = {
 /**
  * Return the current seek position (ms).
  */
-async getCurrentTime() : Promise<number> {
-    return await TAURI_INVOKE("get_current_time");
+async getCurrentTime() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_current_time") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Load a video from a file path supplied directly (e.g. drag-and-drop).
@@ -26,9 +31,17 @@ async loadVideoPath(path: string) : Promise<Result<VideoInfo, string>> {
  * Update the internal seek position and return the custom-protocol URL that
  * the frontend should assign to the `<img>` src attribute.
  */
-async seekFrame(timeMs: number) : Promise<Result<string, string>> {
+async seekFrame(timeMs: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("seek_frame", { timeMs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async startFrameServer(channel: TAURI_CHANNEL<number[]>) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_frame_server", { channel }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -46,6 +59,7 @@ async seekFrame(timeMs: number) : Promise<Result<string, string>> {
 
 /** user-defined types **/
 
+export type TAURI_CHANNEL<TSend> = null
 export type VideoInfo = { duration_ms: number; width: number; height: number; path: string }
 
 /** tauri-specta globals **/

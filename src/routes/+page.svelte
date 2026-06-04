@@ -4,6 +4,7 @@
   import type { VideoInfo} from "../lib/bindings";
   import {commands} from "../lib/bindings";
   import {open} from "@tauri-apps/plugin-dialog";
+    import { Channel } from "@tauri-apps/api/core";
 
   // ---------------------------------------------------------------------------
   // State
@@ -15,6 +16,8 @@
   let isLoading = $state(false);
   let errorMsg = $state("");
   let filename = $state("");
+
+  //const ctx = canvas.getContext('2d')!;
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -72,7 +75,7 @@
   // Drag-and-drop (Tauri window-level)
   // ---------------------------------------------------------------------------
   onMount(() => {
-    const appWindow = getCurrentWindow();
+    /* const appWindow = getCurrentWindow();
     appWindow.onDragDropEvent(async (event) => {
       if (event.payload.type === "drop") {
         const paths: string[] = event.payload.paths;
@@ -84,7 +87,9 @@
       onDestroy(() => {
         unlisten();
       });
-    });
+    }); */
+
+    startNv12Stream();
   });
 
   // ---------------------------------------------------------------------------
@@ -106,6 +111,81 @@
       // User probably cancelled the dialog, so we can ignore errors
     }
   }
+
+
+  // 1. Canvas と描画コンテキストの取得
+  
+
+  async function startNv12Stream() {
+    const canvas = document.getElementById('video-canvas') as HTMLCanvasElement;
+    console.log(canvas);
+
+    // 動画の解像度（Rust側の wgpu 出力サイズと完全に一致させてください）
+    const width = 1920;
+    const height = 1080;
+    
+    // Canvasのサイズをあらかじめ動画に合わせておく
+    canvas.width = width;
+    canvas.height = height;
+
+    // 2. Tauri v2 の IPC チャンネルを作成
+    const onFrameChannel = new Channel<number[]>();
+
+    const ctx = canvas.getContext('2d')!;
+    
+    // 3. 毎フレームのバイナリが届いたときの処理
+    onFrameChannel.onmessage = (nv12Binary: number[]) => {
+      try {
+        // 1920 を 256 の倍数に切り上げる計算（Rustの aligned_stride と同じにする）
+      // 1920 なら 2048、1280 なら 1280 になります。
+      const alignedWidth = (width + 255) & ~255; 
+
+      const frame = new VideoFrame(new Uint8Array(nv12Binary), {
+        format: 'NV12',
+        
+        // ★ 最重要修正：データの実体幅（パディング込みの幅）を教える
+        codedWidth: alignedWidth,  // ➔ 2048
+        codedHeight: height,       // ➔ 1080
+
+        // ★ 追加：ただし、実際に画面に見せる（切り出す）サイズは本来の動画サイズだよ、と指定する
+        // これを入れることで、右側の128バイト分の黒いゴミ余白が自動的にカットされて描画されます。
+        displayWidth: width,  // ➔ 1920
+        displayHeight: height,// ➔ 1080
+
+        timestamp: performance.now() * 1000,
+        colorSpace: {
+          matrix: 'bt709',
+          primaries: 'bt709',
+          transfer: 'bt709',
+          fullRange: false,
+        }
+      });
+
+        // 5. Canvas に描画
+        // 2D Canvas の drawImage は、VideoFrame をそのまま画像ソースとして受け付けます。
+        // ブラウザ内部の GPU が、超高速に NV12 ➔ RGBA への色変換を行ってくれます。
+        ctx.drawImage(frame, 0, 0, width, height);
+
+        // 6. ★最重要★ メモリ解放
+        // VideoFrame は GPU のリソースと直結しているため、描画直後に必ず close() を呼びます。
+        // これを忘れると数秒でブラウザ（WebView）がメモリ不足でクラッシュします。
+        frame.close();
+        console.log('フレームを描画しました');
+      } catch (error) {
+        console.error('VideoFrame の生成または描画に失敗しました:', error);
+      }
+    };
+
+    // 7. バックエンドのストリーミング開始コマンドを呼び出し、チャンネルを渡す
+    try {
+      await commands.startFrameServer(onFrameChannel);
+      console.log('NV12 ストリーミングを開始しました');
+    } catch (err) {
+      console.error('バックエンドの起動に失敗:', err);
+    }
+  }
+
+
 </script>
 
 <!-- ========================================================================
@@ -133,13 +213,11 @@
     class:drop-zone={!videoInfo}
     ondragover={(e) => e.preventDefault()}
   >
-    {#if previewSrc}
-      <img
-        id="preview-canvas"
-        src={previewSrc}
-        alt="Video frame preview"
-        class="preview-img"
-      />
+
+    <canvas id="video-canvas"></canvas>
+
+    <!-- {#if previewSrc}
+      
     {:else}
       <div class="drop-hint">
         <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -151,7 +229,7 @@
     {/if}
     {#if errorMsg}
       <div class="error-banner">{errorMsg}</div>
-    {/if}
+    {/if} -->
   </main>
 
   <!-- Timeline / seekbar -->
@@ -260,11 +338,10 @@
     border: 2px dashed #2d2d2d;
   }
 
-  .preview-img {
+  #video-canvas {
     max-width: 100%;
     max-height: 100%;
-    object-fit: contain;
-    display: block;
+    background: #000;
   }
 
   .drop-hint {

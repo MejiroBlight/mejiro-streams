@@ -1,141 +1,216 @@
-use std::num::NonZeroU32;
 use super::context::GpuContext;
 
-
-pub struct ReadPixel {
+/// RGBA から NV12 へのコンピュートパスと、CPU引き戻しバッファを一本化したマネージャー
+pub struct RgbaToNv12ComputeConverter {
     width: u32,
     height: u32,
     
-    // Yプレーン用とUVプレーン用の、CPU読み出し用バッファ
-    buffer_y: wgpu::Buffer,
-    buffer_uv: wgpu::Buffer,
-    
-    // wgpu側のパディングを含んだ1行のバイト数
-    padded_bytes_per_row_y: u32,
-    padded_bytes_per_row_uv: u32,
-    
-    // パディングを剥ぎ取った、本来のYUVバイナリの各サイズ
-    unpadded_size_y: usize,
-    unpadded_size_uv: usize,
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+
+    // 計算用の中間Storageテクスチャ (フォーマットはR32Uintで固定)
+    storage_texture_y: wgpu::Texture,
+    storage_texture_uv: wgpu::Texture,
+    view_y: wgpu::TextureView,
+    view_uv: wgpu::TextureView,
+
+    // 最終成果物が1本になって入る、CPU読み出し用の一体型バッファ
+    output_cpu_buffer: wgpu::Buffer,
+    aligned_stride: u32,
+    y_plane_size: u64,
+    total_buffer_size: u64,
 }
 
-impl ReadPixel {
+impl RgbaToNv12ComputeConverter {
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
         let device = &ctx.device;
-        // --- 1. wgpuのアライメント（256の倍数）を計算 ---
-        // Yは1ピクセル1バイト（R8Unorm）
-        let bytes_per_row_y = width;
-        let padded_bytes_per_row_y = (bytes_per_row_y + 255) & !255; // 255を足して下位8bitを落とす（256倍数化）
-        
-        // UVは縦横半分だが、1ピクセル2バイト（Rg8Unorm）なので、1行のバイト幅は width/2 * 2 = width と同じになる
-        let bytes_per_row_uv = width; 
-        let padded_bytes_per_row_uv = (bytes_per_row_uv + 255) & !255;
 
-        // --- 2. GPUからコピーを受け取るバッファの作成 ---
-        let buffer_y = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Read Buffer Y"),
-            size: (padded_bytes_per_row_y * height) as u64,
+        // 1. wgpuの256バイトの掟に従い、アライメント後の1行あたりのバイト幅を計算 (1920なら2048)
+        let aligned_stride = (width + 255) & !255; 
+        let y_plane_size = (aligned_stride * height) as u64;
+        let uv_plane_size = (aligned_stride * (height / 2)) as u64;
+        let total_buffer_size = y_plane_size + uv_plane_size;
+
+        // 2. バインディングレイアウトの定義 (入力RGBA1枚 ＋ 出力Storageテクスチャ2枚)
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("RGBA to NV12 Compute Layout"),
+            entries: &[
+                // Binding 0: 入力 RGBA テクスチャ (Read専用)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Binding 1: 出力 Y プレーン (R32Uint Storage)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                // Binding 2: 出力 UV プレーン (R32Uint Storage)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // 3. コンピュートシェーダーの読み込み
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RGBA to NV12 Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/rgba_to_nv12_compute.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("RGBA to NV12 Compute Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("RGBA to NV12 Compute Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "main",
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // 4. STORAGE書き込み用中間テクスチャの作成
+        // ★修正: 横幅を 4バイト(R32Uint)に合わせて width / 4 にする
+        let storage_texture_y = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Storage Texture Y (R32Uint)"),
+            size: wgpu::Extent3d { 
+                width: width / 4, // 1920 / 4 = 480 ➔ 1行のバイト数は 480 * 4 = 1920バイト！
+                height, 
+                depth_or_array_layers: 1 
+            },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let storage_texture_uv = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Storage Texture UV (R32Uint)"),
+            // UVプレーンも1行あたり width バイト（960画素×2バイト）なので、480ピクセルで一致します
+            size: wgpu::Extent3d { 
+                width: width / 4, // 1920 / 4 = 480
+                height: height / 2, 
+                depth_or_array_layers: 1 
+            },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let view_y = storage_texture_y.create_view(&Default::default());
+        let view_uv = storage_texture_uv.create_view(&Default::default());
+
+        // 5. 最終成果物が1本になって入る、CPU読み出し用の一体型巨大バッファ
+        let output_cpu_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Output NV12 Unified CPU Buffer"),
+            size: total_buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-
-        let buffer_uv = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Read Buffer UV"),
-            size: (padded_bytes_per_row_uv * (height / 2)) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        // パディングがない本来のYUVのバイトサイズ
-        let unpadded_size_y = (width * height) as usize;
-        let unpadded_size_uv = (width * (height / 2)) as usize;
 
         Self {
-            width, height,
-            buffer_y, buffer_uv,
-            padded_bytes_per_row_y, padded_bytes_per_row_uv,
-            unpadded_size_y, unpadded_size_uv,
+            width, height, pipeline, bind_group_layout,
+            storage_texture_y, storage_texture_uv, view_y, view_uv,
+            output_cpu_buffer, aligned_stride, y_plane_size, total_buffer_size,
         }
     }
 
-    /// 1. GPUに対して「テクスチャからバッファへコピーせよ」という命令をエンコードする
-    pub fn enqueue_copy(
+    /// 【一本化された実行関数】
+    /// 1. コンピュートシェーダーで高速NV12変換
+    /// 2. copy_texture_to_buffer を使って、GPU内で本来のNV12（1バイト/2バイト）のサイズとして1本のバッファに結合パッキング
+    /// 3. メモリをCPUへ引き戻して Vec<u8> として返却
+    pub async fn process_and_download(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
-        texture_y: &wgpu::Texture,
-        texture_uv: &wgpu::Texture,
-    ) {
-        // Yプレーンのコピー
+        ctx: &GpuContext,
+        input_rgba_view: &wgpu::TextureView,
+    ) -> Result<Vec<u8>, String> {
+        let device = &ctx.device;
+        let queue = &ctx.queue;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        // バインドグループの作成
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("RGBA to NV12 Compute Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input_rgba_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.view_y) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.view_uv) },
+            ],
+        });
+
+        // --- ステージ1: コンピュートシェーダーによる超並列YUV変換 ---
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("RGBA to NV12 Compute Pass"),
+                ..Default::default()
+            });
+            cpass.set_pipeline(&self.pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+
+            // 16x16タイルのスレッドを dispatch
+            let workgroups_x = (self.width + 15) / 16;
+            let workgroups_y = (self.height + 15) / 16;
+            cpass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+        }
+
+        // --- ステージ2: 2枚の出力を、1本のバッファ（前半Y、後半UV）へGPU内で超高速合流パッキング ---
+        // ★ここで wgpu に「テクスチャの中身はR32Uint(4バイト)だけど、コピーする時はR8Unorm(1バイト)のサイズとして扱って！」と嘘をつくことで
+        // 余分なゼロバイトが消え去り、ギチギチにパッキングされたNV12バッファが完成します。
+
+        // Yプレーンのコピー (横幅の指定を width / 4 に合わせる)
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: texture_y, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer { buffer: &self.buffer_y, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(self.padded_bytes_per_row_y), rows_per_image: None } },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            wgpu::ImageCopyTexture { texture: &self.storage_texture_y, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer{ buffer: &self.output_cpu_buffer, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(self.aligned_stride), rows_per_image: None } },
+            wgpu::Extent3d { width: self.width / 4, height: self.height, depth_or_array_layers: 1 }, // ★ width / 4
         );
 
         // UVプレーンのコピー
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: texture_uv, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer { buffer: &self.buffer_uv, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(self.padded_bytes_per_row_uv), rows_per_image: None } },
-            wgpu::Extent3d { width: self.width / 2, height: self.height / 2, depth_or_array_layers: 1 },
+            wgpu::ImageCopyTexture { texture: &self.storage_texture_uv, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &self.output_cpu_buffer, layout: wgpu::ImageDataLayout { offset: self.y_plane_size, bytes_per_row: Some(self.aligned_stride), rows_per_image: None } },
+            wgpu::Extent3d { width: self.width / 4, height: self.height / 2, depth_or_array_layers: 1 }, // ★ width / 4
         );
-    }
 
-    /// 2. GPUの計算終了を待ち、パディングを剥ぎ取って1本の連続したNV12バイナリ（Vec<u8>）にして取り出す
-    pub async fn download_pixels(&self, ctx: &GpuContext) -> Vec<u8> {
-        let device = &ctx.device;
-        // バッファのスライスを取得
-        let slice_y = self.buffer_y.slice(..);
-        let slice_uv = self.buffer_uv.slice(..);
+        // コマンドの送信
+        queue.submit(Some(encoder.finish()));
 
-        // 非同期でマップ要求（CPUから読める状態にするリクエスト）
-        let (tx_y, mut rx_y) = tokio::sync::oneshot::channel();
-        let (tx_uv, mut rx_uv) = tokio::sync::oneshot::channel();
-
-        slice_y.map_async(wgpu::MapMode::Read, move |res| { let _ = tx_y.send(res); });
-        slice_uv.map_async(wgpu::MapMode::Read, move |res| { let _ = tx_uv.send(res); });
-
-        // GPUの処理を強制的に進めて待機
+        // --- ステージ3: CPUへの引き戻し ---
+        let slice = self.output_cpu_buffer.slice(..);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        
+        slice.map_async(wgpu::MapMode::Read, move |res| { let _ = tx.send(res); });
         device.poll(wgpu::Maintain::Wait);
+        rx.await.map_err(|e| format!("Channel error: {e}"))?.map_err(|e| format!("Buffer map error: {e}"))?;
 
-        // マップ完了の確認
-        rx_y.await.expect("Yバッファのマップに失敗しました").expect("Yバッファのマップに失敗しました");
-        rx_uv.await.expect("UVバッファのマップに失敗しました").expect("UVバッファのマップに失敗しました");
+        let final_nv12 = slice.get_mapped_range().to_vec(); // ここで初めて、GPUが書き込んだNV12データがCPU側に現れる
 
-        // 最終成果物を格納する、パディングなしのぴったりサイズのVecを確保
-        let mut final_nv12 = vec![0u8; self.unpadded_size_y + self.unpadded_size_uv];
+        self.output_cpu_buffer.unmap();
 
-        {
-            // GPUメモリのデータにアクセス
-            let data_y = slice_y.get_mapped_range();
-            let data_uv = slice_uv.get_mapped_range();
-
-            // --- Yプレーンのコピー（パディング除去） ---
-            let src_stride_y = self.padded_bytes_per_row_y as usize;
-            let dst_stride_y = self.width as usize;
-            for row in 0..self.height as usize {
-                let src_start = row * src_stride_y;
-                let dst_start = row * dst_stride_y;
-                final_nv12[dst_start..dst_start + dst_stride_y]
-                    .copy_from_slice(&data_y[src_start..src_start + dst_stride_y]);
-            }
-
-            // --- UVプレーンのコピー（パディング除去） ---
-            let src_stride_uv = self.padded_bytes_per_row_uv as usize;
-            let dst_stride_uv = self.width as usize; // 横幅/2 * 2バイト = width
-            let uv_offset_in_final = self.unpadded_size_y; // Yデータのすぐ後ろに配置
-            
-            for row in 0..(self.height / 2) as usize {
-                let src_start = row * src_stride_uv;
-                let dst_start = uv_offset_in_final + (row * dst_stride_uv);
-                final_nv12[dst_start..dst_start + dst_stride_uv]
-                    .copy_from_slice(&data_uv[src_start..src_start + dst_stride_uv]);
-            }
-        } // ここで data_y と data_uv のスコープが終わり、アンマップ可能になる
-
-        // 次のフレームのためにバッファをアンマップ（ロック解除）
-        self.buffer_y.unmap();
-        self.buffer_uv.unmap();
-
-        final_nv12
+        Ok(final_nv12)
     }
 }

@@ -1,5 +1,4 @@
 use specta_typescript::{BigIntExportBehavior, Typescript};
-use tauri_specta::{Builder, collect_commands};
 use std::path::PathBuf;
 
 use crate::commands;

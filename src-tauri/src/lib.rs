@@ -1,14 +1,14 @@
 mod commands;
 mod decoder;
-mod protocol;
 mod state;
 mod gpu;
 mod worker_thread;
 pub mod export;
 
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::Arc;
+
 use tauri::Manager;
+use tokio::sync::RwLock;
 
 use crate::state::AppState;
 
@@ -21,28 +21,14 @@ pub fn run() {
         // --- setup: initialise GPU renderer ------------------------------------
         .setup(|app| {
             let gpu_ctx = pollster::block_on(gpu::context::GpuContext::new());
-            match gpu_ctx {
-                Ok(r) => {
-                    eprintln!("[wgpu] Renderer initialised successfully");
-                    app.manage( AppState {
-                        current_time: Mutex::new(0),
-                        video_path: Mutex::new(None),
-                        ffmpeg_ctx: Mutex::new(None),
-                        gpu_ctx: Mutex::new(Some(r)),
-                        pipelines: Mutex::new(None),
-                    });
-                }
-                Err(e) => {
-                    eprintln!("[wgpu] GPU renderer unavailable: {e}. Falling back to CPU path.");
-                    app.manage(AppState {
-                        current_time: Mutex::new(0),
-                        video_path: Mutex::new(None),
-                        ffmpeg_ctx: Mutex::new(None),
-                        gpu_ctx: Mutex::new(None),
-                        pipelines: Mutex::new(None),
-                    });
-                }
+            if gpu_ctx.is_err() {
+                panic!("Failed to initialize GPU context: {:?}", gpu_ctx.err());
             }
+            app.manage(AppState{
+                gpu_ctx: Arc::new(gpu_ctx.unwrap()),
+                worker_thread: Arc::new(RwLock::new(None)),
+                timeline_state: Arc::new(RwLock::new(state::TimelineState::default())),
+            });
             Ok(())
         })
         // --- IPC commands -----------------------------------------------------
