@@ -18,7 +18,6 @@ pub struct RgbaToNv12ComputeConverter {
     output_cpu_buffer: wgpu::Buffer,
     aligned_stride: u32,
     y_plane_size: u64,
-    total_buffer_size: u64,
 }
 
 impl RgbaToNv12ComputeConverter {
@@ -135,7 +134,7 @@ impl RgbaToNv12ComputeConverter {
         Self {
             width, height, pipeline, bind_group_layout,
             storage_texture_y, storage_texture_uv, view_y, view_uv,
-            output_cpu_buffer, aligned_stride, y_plane_size, total_buffer_size,
+            output_cpu_buffer, aligned_stride, y_plane_size, 
         }
     }
 
@@ -184,16 +183,47 @@ impl RgbaToNv12ComputeConverter {
 
         // Yプレーンのコピー (横幅の指定を width / 4 に合わせる)
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: &self.storage_texture_y, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer{ buffer: &self.output_cpu_buffer, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(self.aligned_stride), rows_per_image: None } },
-            wgpu::Extent3d { width: self.width / 4, height: self.height, depth_or_array_layers: 1 }, // ★ width / 4
+            wgpu::ImageCopyTexture {
+                texture: &self.storage_texture_y, 
+                mip_level: 0, 
+                origin: wgpu::Origin3d::ZERO, 
+                aspect: wgpu::TextureAspect::All 
+            },
+            wgpu::ImageCopyBuffer{ 
+                buffer: &self.output_cpu_buffer, 
+                layout: wgpu::ImageDataLayout { 
+                    offset: 0, 
+                    bytes_per_row: Some(self.aligned_stride), 
+                    rows_per_image: None 
+                } 
+            },
+            wgpu::Extent3d { 
+                width: self.width / 4, 
+                height: self.height, 
+                depth_or_array_layers: 1 
+            }, // ★ width / 4
         );
 
         // UVプレーンのコピー
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: &self.storage_texture_uv, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer { buffer: &self.output_cpu_buffer, layout: wgpu::ImageDataLayout { offset: self.y_plane_size, bytes_per_row: Some(self.aligned_stride), rows_per_image: None } },
-            wgpu::Extent3d { width: self.width / 4, height: self.height / 2, depth_or_array_layers: 1 }, // ★ width / 4
+            wgpu::ImageCopyTexture { 
+                texture: &self.storage_texture_uv, 
+                mip_level: 0, 
+                origin: wgpu::Origin3d::ZERO, 
+                aspect: wgpu::TextureAspect::All 
+            },
+            wgpu::ImageCopyBuffer { 
+                buffer: &self.output_cpu_buffer, 
+                layout: wgpu::ImageDataLayout { 
+                    offset: self.y_plane_size, 
+                    bytes_per_row: Some(self.aligned_stride), rows_per_image: None
+                } 
+            },
+            wgpu::Extent3d { 
+                width: self.width / 4, 
+                height: self.height / 2, 
+                depth_or_array_layers: 1 
+            }, // ★ width / 4
         );
 
         // コマンドの送信
@@ -211,6 +241,27 @@ impl RgbaToNv12ComputeConverter {
 
         self.output_cpu_buffer.unmap();
 
-        Ok(final_nv12)
+        // --- ★ パディングを剥ぎ取る処理を追加 ---
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let stride = self.aligned_stride as usize; // 2048
+
+        // パディングなしの本来のNV12サイズ (1920 * 1080 * 1.5)
+        let mut packed_nv12 = Vec::with_capacity(width * height + (width * height / 2));
+
+        // 1. Yプレーンのパディング剥ぎ取り
+        for y in 0..height {
+            let start = y * stride;
+            packed_nv12.extend_from_slice(&final_nv12[start..start + width]);
+        }
+
+        // 2. UVプレーンのパディング剥ぎ取り (Yプレーンの直後から始まる)
+        let y_plane_end = self.y_plane_size as usize;
+        for y in 0..(height / 2) {
+            let start = y_plane_end + (y * stride);
+            packed_nv12.extend_from_slice(&final_nv12[start..start + width]);
+        }
+
+        Ok(packed_nv12)
     }
 }

@@ -87,7 +87,11 @@ pub async fn get_current_time(state: tauri::State<'_, AppState>) -> Result<u64, 
 #[tauri::command]
 #[specta::specta]
 pub async fn start_frame_server(state: tauri::State<'_, AppState>, channel: Channel<Vec<u8>>) ->Result<String, String> {
-    worker_thread::FrameServer::start(state, channel).await;
+    state.timeline_state.write().await.stream_channel.replace(channel);
+    if state.worker_thread.read().await.is_some() {
+        return Err("Worker thread already running".to_string());
+    }
+    worker_thread::FrameServer::start(state).await;
     Ok("Frame server started".to_string())
 }
 

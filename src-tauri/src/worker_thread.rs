@@ -1,8 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
-use tauri::{State, ipc::Channel};
+use tauri::{ipc::Channel};
 use tokio::sync::RwLock;
-use wgpu::naga::DerivativeAxis::Width;
 
 use crate::{commands::CommandResponse, decoder, gpu, state::{AppState, ThreadHandler, TimelineState}};
 
@@ -17,7 +16,6 @@ pub enum WorkerMessage {
 pub struct FrameServer {
     rx: tokio::sync::mpsc::Receiver<WorkerMessage>,
     tx: tokio::sync::mpsc::Sender<CommandResponse>,
-    frame_channel: Channel<Vec<u8>>,
     ffmpeg_ctx: Option<decoder::Decorder>,
     timeline_state: Arc<RwLock<TimelineState>>,
     gpu_ctx: Arc<gpu::context::GpuContext>,
@@ -32,7 +30,7 @@ pub struct Pipelines {
 
 impl FrameServer {
 
-    pub async fn start(state: tauri::State<'_, AppState>, frame_channel: Channel<Vec<u8>>){
+    pub async fn start(state: tauri::State<'_, AppState>){
         let (main_tx, worker_rx) = tokio::sync::mpsc::channel(100);
         let (worker_tx, main_rx) = tokio::sync::mpsc::channel(100);
         let timeline_state = state.timeline_state.clone();
@@ -41,7 +39,6 @@ impl FrameServer {
             let mut server = FrameServer {
                 rx: worker_rx,
                 tx: worker_tx,
-                frame_channel,
                 timeline_state,
                 gpu_ctx,
                 ffmpeg_ctx: None,
@@ -112,7 +109,14 @@ impl FrameServer {
                         self.gpu_ctx.queue.submit(Some(encoder.finish()));
                         match pipelines.read_pixel.process_and_download(&self.gpu_ctx, flipped_v).await {
                             Ok(pixels) => {
-                                let _ = self.frame_channel.send(pixels);
+                                match &self.timeline_state.read().await.stream_channel {
+                                    Some(channel) => {
+                                        if let Err(e) = channel.send(pixels){
+                                            eprintln!("Error sending pixels to stream channel: {e}");
+                                        }
+                                    }
+                                    None => eprintln!("No stream channel available to send pixels"),
+                                }
                             },
                             Err(e) => eprintln!("Error downloading pixels: {e}"),
                         }

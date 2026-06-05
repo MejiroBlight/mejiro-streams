@@ -10,6 +10,7 @@ pub struct Nv12Uploader {
     pub texture_rgba: wgpu::Texture,  // RGBA変換結果用
     pub view_rgba: wgpu::TextureView,
     pub config_buffer: wgpu::Buffer, // 変換に必要なパラメータをGPUに渡すためのバッファ
+    
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }

@@ -1,6 +1,7 @@
 use crate::{commands::{CommandResponse}, gpu::context::GpuContext, worker_thread::WorkerMessage};
 
-use std::{default, sync::Arc};
+use std::{sync::Arc};
+use tauri::ipc::Channel;
 use tokio::sync::RwLock;
 
 /// Shared application state passed to every command and protocol handler.
@@ -14,6 +15,7 @@ pub struct AppState {
 pub struct TimelineState {
     pub current_time: u64,
     pub video_info: Option<crate::commands::VideoInfo>,
+    pub stream_channel: Option<Channel<Vec<u8>>>,
 }
 
 pub struct ThreadHandler<S, R>{

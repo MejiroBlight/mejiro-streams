@@ -2,7 +2,7 @@ use crate::decoder;
 
 use super::context::GpuContext;
 
-pub struct Uploader {
+pub struct RgbaUploader {
     width: u32,
     height: u32,
 
@@ -10,7 +10,7 @@ pub struct Uploader {
     pub view: wgpu::TextureView,
 }
 
-impl Uploader{
+impl RgbaUploader{
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
         let device = &ctx.device;
         // 1. RGBAプレーン (等倍, Rgba8Unorm)
