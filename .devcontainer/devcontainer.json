@@ -1,0 +1,10 @@
+{
+    "name": "mejiro-streams",
+    // 👇 imageの代わりに、同じフォルダのDockerfileを読み込む指定にする
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/rust:1": {}
+    }
+}
