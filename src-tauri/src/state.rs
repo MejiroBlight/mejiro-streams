@@ -15,7 +15,6 @@ pub struct AppState {
 pub struct TimelineState {
     pub current_time: u64,
     pub video_info: Option<crate::commands::VideoInfo>,
-    pub stream_channel: Option<Channel<Vec<u8>>>,
 }
 
 pub struct ThreadHandler<S, R>{

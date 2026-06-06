@@ -1,15 +1,13 @@
 use std::{path::PathBuf, sync::Arc};
 
-use tauri::{ipc::Channel};
+use tauri::{UriSchemeResponder, http::response, http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE}};
 use tokio::sync::RwLock;
 
 use crate::{commands::CommandResponse, decoder, gpu, state::{AppState, ThreadHandler, TimelineState}};
 
 
 pub enum WorkerMessage {
-    SeekFrame(u64), // frame number
-    Pause,
-    Play,
+    SeekFrame(u64, UriSchemeResponder), // frame number
     LoadVideo(PathBuf), // video path
 }
 
@@ -53,14 +51,36 @@ impl FrameServer {
             rx: main_rx,
             handle,
         });
+        eprintln!("Frame server started");
     }
 
     async fn thread_loop(&mut self) {
         while let Some(message) = self.rx.recv().await {
             match message {
-                WorkerMessage::SeekFrame(time_ms) => {
+                WorkerMessage::SeekFrame(time_ms, responder) => {
                     self.timeline_state.write().await.current_time = time_ms;
-                    self.decode_and_send_frame(time_ms).await;
+                    let result = self.decode_and_send_frame(time_ms).await;
+                    match result {
+                        Ok(frame_data) => {
+                            let response = response::Builder::new()
+                                .status(200)
+                                .header(CONTENT_TYPE, "application/octet-stream")
+                                .header(ACCESS_CONTROL_ALLOW_ORIGIN, "http://localhost:1420") 
+                                .body(frame_data)
+                                .unwrap();
+                            responder.respond(response);
+                        },
+                        Err(e) => {
+                            eprintln!("{e}");
+                            let response = response::Builder::new()
+                                .status(500)
+                                .header(CONTENT_TYPE, "text/plain")
+                                .header(ACCESS_CONTROL_ALLOW_ORIGIN, "http://localhost:1420") 
+                                .body(e.into_bytes())
+                                .unwrap();
+                            responder.respond(response);
+                        }
+                    }
                 },
                 WorkerMessage::LoadVideo(path) => {
                     match decoder::Decorder::new(&path) {
@@ -76,13 +96,7 @@ impl FrameServer {
                             let _ = self.tx.send(CommandResponse::VideoInfo(None)).await;
                         },
                     }
-                },
-                WorkerMessage::Pause => {
-                    // Handle pause logic if needed
-                },
-                WorkerMessage::Play => {
-                    // Handle play logic if needed
-                },
+                }
             }
         }
     }
@@ -96,37 +110,23 @@ impl FrameServer {
         });
     }
 
-    async fn decode_and_send_frame(&mut self, time_ms: u64) {
+    async fn decode_and_send_frame(&mut self, time_ms: u64) -> Result<Vec<u8>, String> {
         match (&mut self.ffmpeg_ctx, &mut self.pipelines) {
             (Some(decoder), Some(pipelines)) => {
                 match decoder.decode_frame(time_ms) {
                     Ok(frame) => {
-                        let pipeline_time = std::time::Instant::now();
                         let mut encoder = self.gpu_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("Frame Render Encoder"),
                         });
                         let v = pipelines.nv12_upload.upload(&self.gpu_ctx,&mut encoder, &frame);
                         let flipped_v = pipelines.flip.execute(&self.gpu_ctx, &mut encoder, &v);
                         self.gpu_ctx.queue.submit(Some(encoder.finish()));
-                        match pipelines.read_pixel.process_and_download(&self.gpu_ctx, flipped_v).await {
-                            Ok(pixels) => {
-                                eprintln!("Pipeline processing time: {} ms", pipeline_time.elapsed().as_millis());
-                                match &self.timeline_state.read().await.stream_channel {
-                                    Some(channel) => {
-                                        if let Err(e) = channel.send(pixels){
-                                            eprintln!("Error sending pixels to stream channel: {e}");
-                                        }
-                                    }
-                                    None => eprintln!("No stream channel available to send pixels"),
-                                }
-                            },
-                            Err(e) => eprintln!("Error downloading pixels: {e}"),
-                        }
+                        pipelines.read_pixel.process_and_download(&self.gpu_ctx, flipped_v).await.map_err(|e| e.to_string())
                     },
-                    Err(e) => eprintln!("Error decoding frame: {e}"),
+                    Err(e) => Err(format!("Error decoding frame: {e}")),
                 }
             },
-            _ => eprintln!("Decoder or pipelines not initialized"),
+            _ => Err("Decoder or pipelines not initialized".to_string()),
         }
     }
 }

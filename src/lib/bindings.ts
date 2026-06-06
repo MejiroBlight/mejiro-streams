@@ -27,21 +27,9 @@ async loadVideoPath(path: string) : Promise<Result<VideoInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Update the internal seek position and return the custom-protocol URL that
- * the frontend should assign to the `<img>` src attribute.
- */
-async seekFrame(timeMs: number) : Promise<Result<null, string>> {
+async startFrameServer() : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("seek_frame", { timeMs }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async startFrameServer(channel: TAURI_CHANNEL<number[]>) : Promise<Result<string, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("start_frame_server", { channel }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_frame_server") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -59,7 +47,6 @@ async startFrameServer(channel: TAURI_CHANNEL<number[]>) : Promise<Result<string
 
 /** user-defined types **/
 
-export type TAURI_CHANNEL<TSend> = null
 export type VideoInfo = { duration_ms: number; width: number; height: number; path: string }
 
 /** tauri-specta globals **/

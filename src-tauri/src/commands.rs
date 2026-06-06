@@ -24,19 +24,6 @@ pub struct VideoInfo {
 // Commands
 // ---------------------------------------------------------------------------
 
-/// Update the internal seek position and return the custom-protocol URL that
-/// the frontend should assign to the `<img>` src attribute.
-#[tauri::command]
-#[specta::specta]
-pub async fn seek_frame(state: tauri::State<'_, AppState>, time_ms: u64) -> Result<(), String> {
-    let _ = state.worker_thread.write().await.as_ref()
-        .ok_or("Worker thread not initialized".to_string())?
-        .tx
-        .send(worker_thread::WorkerMessage::SeekFrame(time_ms))
-        .await.map_err(|e| format!("Failed to send message to worker thread: {e}"));
-    Ok(())
-}
-
 /// Load a video from a file path supplied directly (e.g. drag-and-drop).
 #[tauri::command]
 #[specta::specta]
@@ -86,11 +73,7 @@ pub async fn get_current_time(state: tauri::State<'_, AppState>) -> Result<u64, 
 
 #[tauri::command]
 #[specta::specta]
-pub async fn start_frame_server(state: tauri::State<'_, AppState>, channel: Channel<Vec<u8>>) ->Result<String, String> {
-    state.timeline_state.write().await.stream_channel.replace(channel);
-    if state.worker_thread.read().await.is_some() {
-        return Err("Worker thread already running".to_string());
-    }
+pub async fn start_frame_server(state: tauri::State<'_, AppState>) ->Result<String, String> {
     worker_thread::FrameServer::start(state).await;
     Ok("Frame server started".to_string())
 }
@@ -99,7 +82,6 @@ pub fn commands_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         get_current_time,
         load_video_path,
-        seek_frame,
         start_frame_server,
     ])
 }
