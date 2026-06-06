@@ -101,6 +101,7 @@ impl FrameServer {
             (Some(decoder), Some(pipelines)) => {
                 match decoder.decode_frame(time_ms) {
                     Ok(frame) => {
+                        let pipeline_time = std::time::Instant::now();
                         let mut encoder = self.gpu_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("Frame Render Encoder"),
                         });
@@ -109,6 +110,7 @@ impl FrameServer {
                         self.gpu_ctx.queue.submit(Some(encoder.finish()));
                         match pipelines.read_pixel.process_and_download(&self.gpu_ctx, flipped_v).await {
                             Ok(pixels) => {
+                                eprintln!("Pipeline processing time: {} ms", pipeline_time.elapsed().as_millis());
                                 match &self.timeline_state.read().await.stream_channel {
                                     Some(channel) => {
                                         if let Err(e) = channel.send(pixels){

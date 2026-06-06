@@ -25,9 +25,6 @@
   }
 </script>
 
-<button on:click={openNewWindow}>
-  新しいウィンドウを開く
-</button>
 
 <Preview />
 

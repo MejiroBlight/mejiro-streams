@@ -24,15 +24,11 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Video decoding (dynamically linked via MSYS2 mingw64 FFmpeg 8.x)
-ffmpeg-next = "8"
+ffmpeg-next = { version = "8", features = ["build"] }
 
 # GPU rendering (offscreen)
 wgpu = "22"
 pollster = "0.3"
-
-# Image encoding
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 tokio = { version = "1.52.3", features = ["time", "rt"] }
 
@@ -47,10 +43,3 @@ tauri-specta = { version = "^2.0.0-rc", features = ["derive", "typescript"] }
 
 [features]
 export-types = []
-
-[profile.dev]
-opt-level = 1
-
-[profile.dev.package."*"]
-opt-level = 3
-

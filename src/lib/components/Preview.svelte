@@ -16,6 +16,9 @@
   let errorMsg = $state("");
   let filename = $state("");
   let canvas = $state<HTMLCanvasElement>(null!);
+  let frameFetchStartTime: number = 0;
+  let frameFetchEndTime: number = 0;
+  
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -50,9 +53,12 @@
   }
 
   async function fetchFrame(ms: number) {
+    frameFetchStartTime = performance.now();
     commands.seekFrame(ms).then(result => {
       if (result.status !== "ok") {
         throw new Error(result.error);
+      }else{
+        console.log(`フレームの取得要求を送信: ${performance.now() - frameFetchStartTime} ms`);
       }
     }).catch(e => {
       errorMsg = `フレームの取得に失敗: ${String(e)}`;
@@ -121,6 +127,9 @@
     const ctx = canvas!.getContext('2d')!;
     onFrameChannel.onmessage = (nv12Binary: number[]) => {
       try {
+        frameFetchEndTime = performance.now();
+        console.log(`フレームの取得にかかった時間: ${frameFetchEndTime - frameFetchStartTime} ms`);
+        const startTime = performance.now();
         const frame = new VideoFrame(new Uint8Array(nv12Binary), {
           format: 'NV12',
           codedWidth: canvas.width, // 256の倍数でパディングされた幅
@@ -134,9 +143,13 @@
           }
         });
         ctx.drawImage(frame, 0, 0, canvas!.width, canvas!.height);
+        const endTime = performance.now();
+        console.log(`フレームの描画にかかった時間: ${endTime - startTime} ms`);
         frame.close();
       } catch (error) {
         console.error('VideoFrame の生成または描画に失敗しました:', error);
+      } finally {
+
       }
     };
 
@@ -223,12 +236,13 @@
     font-size: 13px;
     height: 100vh;
     overflow: hidden;
+    display: flex;
   }
 
   .app {
     display: flex;
     flex-direction: column;
-    height: auto;
+    flex: 1;
   }
 
   /* --- Toolbar --- */

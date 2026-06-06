@@ -1,6 +1,6 @@
 use std::{path::Path};
 
-use ffmpeg_next::{ threading::Config};
+use ffmpeg_next::threading::Config;
 
 use crate::commands::VideoInfo;
 
