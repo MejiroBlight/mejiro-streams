@@ -1,4 +1,12 @@
 {
-  "svelte.enable-ts-plugin": true,
-  "git.ignoreLimitWarning": true
+    "svelte.enable-ts-plugin": true,
+    "git.ignoreLimitWarning": true,
+    "files.associations": {
+        "*.css": "tailwindcss"
+    },
+    "[svelte]": {
+        "editor.tabSize": 4,
+        "editor.defaultFormatter": "svelte.svelte-vscode"
+    },
+    "editor.formatOnSave" : true
 }

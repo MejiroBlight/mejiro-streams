@@ -8,15 +8,15 @@ import path from "path";
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
-  preprocess: vitePreprocess(),
-  kit: {
-    alias: {
-      $lib: path.resolve("./src/lib"),
+    preprocess: vitePreprocess(),
+    kit: {
+        alias: {
+            $lib: path.resolve("./src/lib"),
+        },
+        adapter: adapter({
+            fallback: "index.html",
+        }),
     },
-    adapter: adapter({
-      fallback: "index.html",
-    }),
-  },
 };
 
 export default config;

@@ -12,7 +12,7 @@
             "cwd": "${workspaceFolder}",
             "args": ["run", "tauri", "dev", "--", "--features", "export-types"]
         },
-        
+
         {
             "type": "node",
             "request": "launch",
