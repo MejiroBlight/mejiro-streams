@@ -8,3 +8,5 @@
     {@render children()}
 </div>
 
+<style lang="postcss">
+</style>

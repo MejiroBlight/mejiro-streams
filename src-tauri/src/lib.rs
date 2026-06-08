@@ -1,9 +1,9 @@
 mod commands;
 mod decoder;
-mod state;
-mod gpu;
-mod worker_thread;
 pub mod export;
+mod gpu;
+mod state;
+mod worker_thread;
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub fn run() {
             if gpu_ctx.is_err() {
                 panic!("Failed to initialize GPU context: {:?}", gpu_ctx.err());
             }
-            app.manage(AppState{
+            app.manage(AppState {
                 gpu_ctx: Arc::new(gpu_ctx.unwrap()),
                 worker_thread: Arc::new(RwLock::new(None)),
                 timeline_state: Arc::new(RwLock::new(state::TimelineState::default())),
@@ -48,13 +48,27 @@ pub fn run() {
             eprintln!("Received request for frame {frame_num} at path: {path}");
 
             let state = app.app_handle().state::<AppState>();
-            let _ = state.worker_thread.write().block_on().as_ref()
+            let _ = state
+                .worker_thread
+                .write()
+                .block_on()
+                .as_ref()
                 .ok_or("Worker thread not initialized".to_string())
                 .unwrap()
                 .tx
-                .send(worker_thread::WorkerMessage::SeekFrame(frame_num as u64, responder))
+                .send(worker_thread::WorkerMessage::SeekFrame(
+                    frame_num as u64,
+                    responder,
+                ))
                 .block_on()
                 .map_err(|e| eprintln!("Failed to send message to worker thread: {e}"));
+        })
+        .on_window_event(|window, e| {
+            if let tauri::WindowEvent::Destroyed = e {
+                if window.label() == "main" {
+                    std::process::exit(0);
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

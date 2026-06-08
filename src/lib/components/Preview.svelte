@@ -4,10 +4,9 @@
     import type { VideoInfo } from "../bindings";
     import { commands } from "../bindings";
     import { open } from "@tauri-apps/plugin-dialog";
-
-    // ---------------------------------------------------------------------------
-    // State
-    // ---------------------------------------------------------------------------
+    import { Button } from "bits-ui";
+    import PreviewMenubar from "./preview/PreviewMenubar.svelte";
+    import { subWindows } from "../store";
 
     let videoInfo = $state<VideoInfo | null>(null);
     let currentMs = $state(0);
@@ -18,15 +17,46 @@
     let ctx: CanvasRenderingContext2D;
     let frameFetchStartTime: number = 0;
 
-    // ---------------------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------------------
+    onMount(() => {
+        commands
+            .startFrameServer()
+            .then(() => {
+                console.log("フレームサーバーが起動しました");
+            })
+            .catch((e) => {
+                console.error("フレームサーバーの起動に失敗:", e);
+            });
+    });
+
     function msToTimecode(ms: number): string {
         const h = Math.floor(ms / 3_600_000);
         const m = Math.floor((ms % 3_600_000) / 60_000);
         const s = Math.floor((ms % 60_000) / 1_000);
         const f = Math.floor((ms % 1_000) / (1000 / 30)); // approx 30fps frame number
         return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(f).padStart(2, "0")}`;
+    }
+
+    async function openFile() {
+        isLoading = true;
+        try {
+            const selected = await open({
+                multiple: false,
+                filters: [
+                    {
+                        name: "Video Files",
+                        extensions: ["mp4", "mkv", "avi", "mov", "webm"],
+                    },
+                    { name: "All Files", extensions: ["*"] },
+                ],
+            });
+            if (typeof selected === "string") {
+                await loadVideo(selected);
+            }
+        } catch (e) {
+            // User probably cancelled the dialog, so we can ignore errors
+        } finally {
+            isLoading = false;
+        }
     }
 
     async function loadVideo(path: string) {
@@ -118,94 +148,17 @@
             seekTimer = null;
         }, 100); // 100msのデバウンス
     }
-
-    // ---------------------------------------------------------------------------
-    // Drag-and-drop (Tauri window-level)
-    // ---------------------------------------------------------------------------
-    onMount(() => {
-        const appWindow = getCurrentWindow();
-        appWindow.onDragDropEvent(async (event) => {
-            if (event.payload.type === "drop") {
-                const paths: string[] = event.payload.paths;
-                if (paths.length > 0) {
-                    await loadVideo(paths[0]);
-                }
-            }
-        });
-
-        commands
-            .startFrameServer()
-            .then(() => {
-                console.log("フレームサーバーが起動しました");
-            })
-            .catch((e) => {
-                console.error("フレームサーバーの起動に失敗:", e);
-            });
-    });
-
-    // ---------------------------------------------------------------------------
-    // Open-file button
-    // ---------------------------------------------------------------------------
-    async function openFile() {
-        isLoading = true;
-        try {
-            const selected = await open({
-                multiple: false,
-                filters: [
-                    {
-                        name: "Video Files",
-                        extensions: ["mp4", "mkv", "avi", "mov", "webm"],
-                    },
-                    { name: "All Files", extensions: ["*"] },
-                ],
-            });
-            if (typeof selected === "string") {
-                await loadVideo(selected);
-            }
-        } catch (e) {
-            // User probably cancelled the dialog, so we can ignore errors
-        } finally {
-            isLoading = false;
-        }
-    }
 </script>
 
-<!-- ========================================================================
-     Markup
-     ======================================================================== -->
 <div class="flex flex-col bg-neutral-700 text-neutral-200 h-dvh">
-    <!-- Toolbar -->
-    <header
-        class="flex items-center gap-4 px-4 py-2 bg-neutral-900 border-b-2 border-secondary-500 shrink-0"
-    >
-        <span class="text-xl text-primary-300 font-bold mr-4"
-            >mejiro streams</span
-        >
-        <button
-            onclick={openFile}
-            disabled={isLoading}
-            class="px-3 py-1 bg-primary-800 text-white rounded hover:bg-primary-500 disabled:bg-neutral-700 border"
-        >
-            {isLoading ? "Loading…" : "Open Video"}
-        </button>
-        {#if filename}
-            <span class="filename">{filename}</span>
-        {/if}
-        {#if videoInfo}
-            <span class="meta">{videoInfo.width}x{videoInfo.height}</span>
-        {/if}
-    </header>
-
-    <!-- Preview area -->
+    <PreviewMenubar onOpenFile={openFile} />
     <main
         ondragover={(e) => e.preventDefault()}
         class="grow flex items-center justify-center relative overflow-hidden"
     >
-        <canvas bind:this={canvas} class="w-full h-full object-contain"
+        <canvas bind:this={canvas} class="w-full h-full object-contain bg-black"
         ></canvas>
     </main>
-
-    <!-- Timeline / seekbar -->
     <footer
         class="flex items-center gap-4 px-4 py-2 bg-neutral-900 border-t-2 border-secondary-500 shrink-0"
     >
@@ -227,148 +180,6 @@
         {/if}
     </footer>
 </div>
-
-<!-- ========================================================================
-     Styles
-     ======================================================================== -->
-<!-- <style>
-  .app {
-    display: flex;
-    flex-direction: column;
-    font-family: "Inter", "Segoe UI", sans-serif;
-    font-size: 13px;
-    height: 100vh;
-    background: #0d0d0d;
-    color: #e0e0e0;
-  }
-
-  /* --- Toolbar --- */
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 6px 12px;
-    background: #1a1a1a;
-    border-bottom: 1px solid #2a2a2a;
-    flex-shrink: 0;
-  }
-
-  .app-title {
-    font-weight: 700;
-    font-size: 14px;
-    color: #a78bfa;
-    margin-right: 4px;
-  }
-
-  .btn-open {
-    padding: 6px 12px;
-    background: #7c3aed;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 13px;
-    transition: background 0.2s;
-    
-    &:hover{
-      background: #9d4edd;
-    }
-
-    &:disabled {
-      background: #4c1d95;
-      cursor: default;
-    }
-  }
-
-  .filename {
-    color: #9ca3af;
-    max-width: 320px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .meta {
-    color: #6b7280;
-    font-size: 11px;
-  }
-
-  /* --- Preview --- */
-  .preview-area {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    background: #111;
-    position: relative;
-  }
-
-  .drop-zone {
-    border: 2px dashed #333;
-  }
-
-  .preview-canvas {
-    width: 100%;
-    height: 100%;
-    background: #111;
-    object-fit: contain;
-  }
-
-  /* --- Timeline --- */
-  .timeline {
-    display: flex; 
-    align-items: center;
-    gap: 10px;
-    padding: 8px 14px;
-    background: #161616;
-    border-top: 1px solid #2a2a2a;
-    flex-shrink: 0;
-  }
-
-  .timecode {
-    font-family: "Courier New", monospace;
-    font-size: 12px;
-    color: #a3a3a3;
-    width: 80px;
-    flex-shrink: 0;
-  }
-
-  .timecode-placeholder {
-    font-family: "Courier New", monospace;
-    font-size: 12px;
-    color: #3a3a3a;
-    width: 80px;
-    flex-shrink: 0;
-  }
-
-  .seekbar {
-    flex: 1;
-    -webkit-appearance: none;
-    appearance: none;
-    height: 4px;
-    border-radius: 2px;
-    background: #374151;
-    outline: none;
-    cursor: pointer;
-  }
-
-  .seekbar::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: #7c3aed;
-    cursor: pointer;
-    border: 2px solid #0d0d0d;
-  }
-
-  .seekbar--disabled {
-    opacity: 0.3;
-    cursor: default;
-    pointer-events: none;
-  }
-</style> -->
 
 <style lang="postcss">
     @reference "../../app.css";

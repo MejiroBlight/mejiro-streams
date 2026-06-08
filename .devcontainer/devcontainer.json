@@ -23,7 +23,8 @@
 				"bradlc.vscode-tailwindcss",
 				"stivo.tailwind-fold",
 				"EditorConfig.EditorConfig",
-				"crsx.icons-library"
+				"crsx.icons-library",
+				"fill-labs.dependi"
 			]
 		}
 	},
