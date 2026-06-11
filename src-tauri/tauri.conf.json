@@ -13,10 +13,10 @@
         "windows": [
             {
                 "title": "mejiro-streams",
-                "width": 480,
-                "height": 480,
-                "minWidth": 240,
-                "minHeight": 240,
+                "width": 1280,
+                "height": 720,
+                "minWidth": 800,
+                "minHeight": 600,
                 "dragDropEnabled": true
             }
         ],

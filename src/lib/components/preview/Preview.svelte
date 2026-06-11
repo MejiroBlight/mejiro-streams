@@ -1,12 +1,8 @@
 <script lang="ts">
-    import { getCurrentWindow } from "@tauri-apps/api/window";
-    import { onDestroy, onMount } from "svelte";
-    import type { VideoInfo } from "../bindings";
-    import { commands } from "../bindings";
+    import { onMount } from "svelte";
+    import type { VideoInfo } from "../../bindings";
+    import { commands } from "../../bindings";
     import { open } from "@tauri-apps/plugin-dialog";
-    import { Button } from "bits-ui";
-    import PreviewMenubar from "./preview/PreviewMenubar.svelte";
-    import { subWindows } from "../store";
 
     let videoInfo = $state<VideoInfo | null>(null);
     let currentMs = $state(0);
@@ -150,8 +146,7 @@
     }
 </script>
 
-<div class="flex flex-col bg-neutral-700 text-neutral-200 h-dvh">
-    <PreviewMenubar onOpenFile={openFile} />
+<div class="flex flex-col bg-neutral-700 text-neutral-200 h-full w-full">
     <main
         ondragover={(e) => e.preventDefault()}
         class="grow flex items-center justify-center relative overflow-hidden"
@@ -182,7 +177,7 @@
 </div>
 
 <style lang="postcss">
-    @reference "../../app.css";
+    @reference "$src/app.css";
 
     .timecode {
         @apply font-mono text-sm text-neutral-400;

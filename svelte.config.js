@@ -12,6 +12,7 @@ const config = {
     kit: {
         alias: {
             $lib: path.resolve("./src/lib"),
+            $src: path.resolve("./src"),
         },
         adapter: adapter({
             fallback: "index.html",
